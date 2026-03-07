@@ -1,6 +1,6 @@
 # Agent Authoring
 
-Skill instruction for writing GitHub Copilot agents — sub-agents under an autopilot orchestrator, and orchestrators themselves.
+Skill instruction for writing GitHub Copilot agents — sub-agents and orchestrators.
 
 ---
 
@@ -12,62 +12,102 @@ Agents live in `.github/agents/` as `.agent.md` files. YAML frontmatter + markdo
 
 - `name` — lowercase, hyphenated, matches filename. Used as `#my-agent` handle.
 - `description` — specific domain + output format. Vague descriptions cause misrouting.
-- `tools` — only what the agent needs. No defensive additions. Names must match exact runtime tool identifiers. List only tools the agent calls directly.
+- `tools` — only what the agent needs. Tools define the boundary — if an agent has a tool, it will use it. No defensive additions.
+- `model` — optional. Typical tiers: **Mechanical** (free — file reading, builds, trivial edits), **Reasoning** (free — design judgment, creative input), **Premium** (paid — complex implementation). Specific model IDs belong in the orchestrator's routing table only.
 
-### Body sections (in order)
+### Body sections
 
-`Role` → `How You Work` → `Delegation Contract` → `Raising Concerns` → `What Good Looks Like` → `Skills`. No custom sections.
+Default order: `Role` → `How You Work` → `Delegation Contract` → `Raising Concerns` → `What Good Looks Like` → `Skills`
+
+Reorder when it improves clarity. Domain-specific sections (e.g., "Running Tests", "Test Categories") go after standard sections. Scouts may use minimal structure (Role → Reading Discipline → Output Format → Hard Rules).
 
 ### Status tokens
 
 | Token | Meaning |
 |---|---|
-| `GO` | Requirements clear; proceed |
-| `NO-GO` | Blocked; numbered blockers follow |
-| `APPROVED` | Output accepted; gate passed |
-| `FINDINGS` | Accepted with issues; numbered findings follow |
-| `HUNG BUILD` | Process exceeded timeout; killed |
-| `CONCERN` | Pushing back on the brief |
-| `COMPLETE` | Work finished and verified |
-| `READY` | Artifact produced, ready for next step |
+| `GO` / `NO-GO` | Requirements clear / blocked (numbered blockers) |
+| `APPROVED` / `FINDINGS` | Accepted / accepted with numbered issues |
+| `COMPLETE` / `READY` | Work verified / artifact produced |
+| `CONCERN` | Pushing back on brief |
 | `GAP` | Cannot complete without upstream change |
-| `LOST` | Cannot determine next action; returning control |
+| `LOST` | Cannot determine next action |
+| `HUNG BUILD` | Process exceeded timeout |
 
-Token is always the **first word** of the response. Findings/blockers are **numbered**. Custom tokens must be declared in the Delegation Contract.
+Token is always the **first word** of the response. Each agent adds domain-specific tokens in its Delegation Contract (e.g., `TESTS WRITTEN`, `SPEC READY`, `AUDIT COMPLETE`). Same rules: first word, uppercase, unambiguous.
 
 ### Writing style
 
-- Short imperative sentences: `Edit`, `Run`, `Verify`, `Return`.
-- Explicit limits (counts, timeouts, line ranges). No abstract words (`thorough`, `comprehensive`).
-- Fixed response templates per status. One objective, one done condition per brief.
-- Numbered steps, not flowcharts. One-pass protocols beat decision trees.
+Short imperative sentences. Explicit limits (counts, timeouts, line ranges). No abstract words (`thorough`, `comprehensive`). Fixed response templates per status. Numbered steps, not flowcharts.
 
 ### File size
 
-≤100 lines ideal. 101–150 acceptable. >150 mandatory split. Bloat causes overthinking. Every instruction line is a decision the agent weighs before acting.
+**Sub-agents:** ≤100 lines ideal, ≤150 max. **Orchestrators:** 200–400 lines. Every instruction line is a decision the agent weighs — compress where possible.
+
+### Infra resilience
+
+Transport errors (`Request was aborted`, `CAPIError`) are infra failures. Every agent handles them identically:
+
+1. **2-retry limit.** Same tool/model call fails twice → stop.
+2. **Return `CONCERN`** naming: (a) exact files touched/unprocessed, (b) current state, (c) next smallest step.
+3. **No silent retries.** Never retry a third time.
+
+Include a fail-fast sentence in `How You Work`.
 
 ---
 
-## II. Writing Sub-Agents
+## II. Agent Archetypes
 
-### Objective anchor (required)
+Pick the archetype first — it determines tools, parallelization, and delegation contract shape.
 
-First thing the agent writes after receiving a brief — before any reads or actions. This is a runtime behavior — include it in the agent's `How You Work` section so the agent states it at the start of every invocation.
+| Archetype | Purpose | Parallel? | Standard tools |
+|---|---|---|---|
+| **Orchestrator** | Plans, classifies, delegates. Never writes code/docs. | N/A | `task`, `read_agent`, `list_agents`, `store_memory`, `report_intent`, `ask_user`, `todo` |
+| **Scout** | Read-only fact-finding. Structured findings. | Yes | `view`, `grep`, `glob` |
+| **Implementer** | Writes/edits source code. Runs builds/tests. | No | `view`, `edit`, `create`, `grep`, `glob`, `get_errors`, `runTests`, `store_memory` |
+| **Tester** | Writes tests, enforces quality gates. | No | `view`, `edit`, `create`, `powershell`, `grep`, `glob`, `get_errors`, `runTests`, `store_memory` |
+| **Reviewer** | Read-only code review. APPROVED or FINDINGS. | Yes | `view`, `grep`, `glob`, `get_errors` |
+| **Advisor** | Read-only domain expert. Briefs/specs/creative input. | Yes | `view`, `grep`, `glob` |
+| **Documentarian** | Writes docs only — never source code. | No | `view`, `edit`, `create`, `grep`, `glob`, `store_memory` |
+| **Auditor** | Read-only analysis against standards. Findings reports. | Yes | `view`, `grep`, `glob` |
 
-```
-OBJECTIVE: [one sentence — what I will produce]
-DONE WHEN: [one sentence — exit condition]
-```
+**Tool rule:** Read-only archetypes never get `edit`, `create`, or `powershell`. Add `powershell` to write archetypes only when they need shell commands directly.
 
-Cannot state both in one sentence each? Brief is too broad → return `CONCERN`.
+**Split rule:** Same archetype + different domain → separate agents. Same domain + different archetype → separate agents. Needs tools from two archetypes → split.
+
+### Archetype profiles
+
+#### Scout
+**Tokens:** Findings structure only (no prefix token). **Contract:** Query → Findings (topic, path:line, fact, gaps). **Pattern:** `glob` → `grep` → `view` with line range. One pass + one follow-up max. **Ceiling:** Return findings only. Never write or edit. **Structure:** Minimal — Role → Reading Discipline → Output Format → Hard Rules.
+
+#### Implementer
+**Tokens:** `IMPLEMENTATION COMPLETE`, `TESTS WRITTEN`, `TESTS GREEN`, `CONCERN`, `GAP`. **Contract:** Implement (feature → code + green tests) · Fix findings (findings → fixed code) · Bug fix (failing test → `TESTS WRITTEN`, fix → `TESTS GREEN`). **Pattern:** `grep`/`glob` to locate, read 50–80 lines around hit, then write. Test-driven: red → green → refactor. **Ceiling:** No documentation, no design decisions. `CONCERN` if brief requires judgment. **Infra fallback:** files touched + build/test state + next step.
+
+#### Tester
+**Tokens:** `GO`, `NO-GO`, `APPROVED`, `FINDINGS`, `PASS`, `BLOCK`. **Contract:** Requirements review (→ GO/NO-GO) · Write tests (→ failing tests) · Review tests (→ APPROVED/FINDINGS) · Gate check (→ PASS/BLOCK). **Pattern:** Requirements first — challenge ambiguity. Read production class before writing. One risk area per call. **Ceiling:** No production code. No fixing code to pass tests. **Infra fallback:** test project + filter + next step.
+
+#### Reviewer
+**Tokens:** `APPROVED`, `FINDINGS`, `CONCERN`. **Contract:** Review (full diff → APPROVED/FINDINGS) · Second-pass (fixed diff → APPROVED/remaining). **Pattern:** Verdict first. Full diff in one call. Line ranges for files >150 lines. **Ceiling:** No rewriting code — raise findings, suggest direction. **Infra fallback:** unreviewed files + next slice.
+
+#### Advisor
+**Tokens:** `BRIEF READY`, `SPEC READY`, `CONSISTENT`, `ISSUES`. **Contract:** Design (intent → brief/spec) · Review (→ CONSISTENT/ISSUES) · Resolve GAP (→ revised brief). **Pattern:** Design intent in one sentence first. Structured dimensions. Every spec includes a Design Intent line. **Ceiling:** No code. `CONCERN` if constraints make design impossible. **Infra fallback:** partial brief + remaining sections.
+
+#### Documentarian
+**Tokens:** `DONE`, `CONCERN`. **Contract:** Create (context → doc) · Update (change → section) · Technical note (topic → doc ≤150 lines). **Pattern:** Present tense, active voice, short sentences. Tables over bullets. Mermaid for flows >2 parts. **Ceiling:** No source code. Only decisions with lasting consequences. **Infra fallback:** files written + files remaining.
+
+#### Auditor
+**Tokens:** `AUDIT COMPLETE`, `NO FINDINGS`. **Contract:** Full audit (→ findings) · Targeted audit (→ scoped findings) · Gap check (→ gaps only). **Pattern:** Inventory → Gap detection → Accuracy check → Report. Severity: HIGH/MED/LOW. **Ceiling:** Do not fix findings — return and let orchestrator delegate. **Infra fallback:** completed sections + blocked sections.
+
+---
+
+## III. Writing Sub-Agents
 
 ### Role section
 
-One paragraph answering: (1) what domain it owns, (2) what it produces, (3) what it does **not** do. The scope ceiling is mandatory — unbounded roles drift.
+One paragraph: (1) domain owned, (2) what it produces, (3) what it does **not** do. Scope ceiling is mandatory.
 
 **Parallelization declaration (required):**
-- Read-only agents: *"Analysis-only. Safe to parallelize."*
-- Write agents: *"Write agent. Run sequentially — never in parallel with another write agent."*
+- Read-only: *"Analysis-only. Safe to parallelize."*
+- Write: *"Write agent. Run sequentially — never in parallel with another write agent."*
 
 ### Delegation Contract
 
@@ -77,16 +117,11 @@ One paragraph answering: (1) what domain it owns, (2) what it produces, (3) what
 | Phase name | Input from orchestrator | Output + status token |
 ```
 
-### Breadcrumbs (required)
+### Runtime behaviors (in How You Work)
 
-Every response ends with:
+**Objective anchor** (recommended for implementers/testers): State `OBJECTIVE:` and `DONE WHEN:` before any actions. Can't state both in one sentence each → `CONCERN`.
 
-```
-DID: [what was just completed — one sentence]
-NEXT: [the single next action — one sentence]
-```
-
-Cannot state NEXT in one sentence → return `LOST`. Breadcrumbs enable self-correction and let the orchestrator detect drift by comparing NEXT to the OBJECTIVE anchor.
+**Breadcrumbs** (recommended for multi-step agents): End each response with `DID:` and `NEXT:`. Can't state NEXT in one sentence → `LOST`. Lets orchestrator detect drift by comparing NEXT to OBJECTIVE.
 
 ### Raising Concerns
 
@@ -96,112 +131,100 @@ Cannot state NEXT in one sentence → return `LOST`. Breadcrumbs enable self-cor
 
 Return `CONCERN` and stop. No partial output.
 
-### Brief validation (required)
+### Brief validation
 
-Before starting work, confirm the brief contains: (1) objective, (2) input files, (3) constraints including build/test command, (4) done condition, (5) expected token. If any field is missing or ambiguous → `GAP` with the missing field named.
+**Orchestrator** validates five fields before delegating: objective, input files, constraints, done condition, expected token. **Sub-agents** validate domain-specific prerequisites only. Missing something critical → `GAP` naming the item.
 
-### Sub-agent execution rules
+### Execution rules (tripwires)
 
-**Principles guide. Tripwires enforce.** Every rule below has a principle (why) and a tripwire (a countable limit). An agent that hits a tripwire does not deliberate — it emits the specified token and stops.
+An agent that hits a tripwire emits the token and stops — no deliberation.
 
-| # | Principle | Tripwire |
+| # | Rule | Tripwire |
 |---|---|---|
-| 1 | **Produce first, plan later.** Output artifacts then verify. No extended planning. | File write or terminal command within 3 requests. Brief missing info → `GAP`. Brief complete but no output → `LOST`. |
-| 2 | **No mid-work context hunting.** All facts arrive in the brief. | Any exploration after receiving the brief → `GAP`. |
-| 3 | **No self-rescue.** If stuck, stop. | Second read of same file region → `LOST`. |
-| 4 | **Evidence cadence.** Verify early and often. | First verify within 2–3 requests. Then every 3–5. 4 consecutive requests without verify → force verify. |
-| 5 | **Read surgically.** `grep` → read 20–40 lines around the hit. | Max 3 reads before first output. Max 2 consecutive reads after. No full-file reads over 100 lines. |
-| 6 | **Timeouts.** Declare in Role section. | If exceeded → kill process → `HUNG BUILD`. No retries. |
-| 7 | **No internal monologue.** Output is files, results, tokens. | More than 2 sentences of reasoning before a tool call → execute or `LOST`. |
-
-The orchestrator monitors these same signals externally. Tripwires are your self-enforcement; the orchestrator is the safety net.
+| 1 | **Produce first.** No extended planning. | Output within 3 requests or `GAP`/`LOST`. |
+| 2 | **No mid-work exploration.** Facts arrive in brief. | Exploration after brief → `GAP`. |
+| 3 | **No self-rescue.** | Second read of same region → `LOST`. |
+| 4 | **Verify often.** | 4 consecutive requests without verify → force verify. |
+| 5 | **Read surgically.** `grep` → 20–40 lines. | Max 3 reads before first output. No full-file reads >100 lines. |
+| 6 | **Timeouts.** | Exceeded → kill → `HUNG BUILD`. |
+| 7 | **No monologue.** | >2 sentences reasoning before tool call → `LOST`. |
+| 8 | **Fail fast on infra.** | 2 transport failures → `CONCERN` (see §I). |
+| 9 | **Bounded execution.** | One pass + one verify per invocation. |
 
 ### What Good Looks Like / Skills
 
-- `What Good Looks Like`: 2–4 verifiable sentences. Not aspirational. Litmus test: could a machine or grep command confirm the sentence? "All tests pass" — verifiable. "Code is clean" — aspirational.
-- `Skills`: Only skills actively used. No defensive listing.
+- `What Good Looks Like`: 2–4 verifiable sentences. "All tests pass" — good. "Code is clean" — bad.
+- `Skills`: Only skills actively used.
 
 ---
 
-## III. Writing Orchestrators
+## IV. Writing Orchestrators
 
-The orchestrator has more freedom than sub-agents. It must plan, adapt, and make judgment calls. The constraints below are guidelines that inform good judgment — not rigid gates.
+The orchestrator plans, adapts, and makes judgment calls. These are guidelines, not rigid gates.
+
+### Required sections
+
+- **Cannot Do list** — top of file. Hard limits: no writing code, no running builds, no briefing without model routing.
+- **Execution Loop** — Classify → Explore → Plan → Execute → Gate → Verify → Done.
+- **Task Classification** — table: task signals → pipeline weight (FULL/FAST/TRIVIAL).
+- **Pipelines** — table per weight: step, agent, input, gate.
+- **Agent Selection** — table: task type → agent. "If nothing fits" → general implementer.
+- **Model Routing** — table: agent + task → model ID. Pass `model:` in every brief.
+- **Speed Defaults** — one implementation pass + one verification + one reviewer pass.
+- **Reliability Guardrails** — fallback routing for infra failures.
 
 ### Brief completeness
 
-Before delegating, ensure the brief contains:
-1. **Objective** — one sentence
-2. **Input files** — exact paths or globs
-3. **Constraints** — limits, framework, language
-4. **Done condition** — observable, not aspirational
-5. **Expected token(s)**
+Five fields: (1) objective, (2) input files, (3) constraints, (4) done condition, (5) expected token.
 
-Self-check: can the agent start producing within 1–2 requests from this brief alone? If not, narrow the objective or add input files.
-
-Drift-causing anti-patterns: unnamed files ("implement the feature"), missing locations ("fix the bug"), compound objectives ("A and B" → split).
-
-### Explore batching
-
-Batch fact-gathering into single `#explore` calls with 3–5 named facts. Parallel calls are fine; sequential calls for the same batch waste API requests.
+Self-check: can the agent produce within 1–2 requests? If not, narrow or add files. Anti-patterns: unnamed files, missing locations, compound objectives ("A and B" → split).
 
 ### Monitoring sub-agents
 
-Watch for drift signals and use judgment on when to intervene:
-
 | Signal | Indicator | Response |
 |---|---|---|
-| Objective drift | NEXT breadcrumb diverges from OBJECTIVE | Re-brief with narrower scope |
-| Read spiral | >3 file reads without output | Likely overthinking — intervene |
-| Planning loop | Plans/analysis instead of artifacts for >2 responses | Intervene |
-| Scope creep | Files modified outside declared domain | Stop, review boundaries |
-| Question cascade | >2 clarifying questions | Brief was probably incomplete — re-gather, re-brief |
-| Repeated reads | Same file/region read twice | Agent is stuck — re-brief with guidance |
-| Stall | Same file region edited >2 times without verify | Polishing, not converging — force verify or stop |
-| No breadcrumb | Missing DID/NEXT footer | Reject response, re-invoke |
+| Drift | NEXT diverges from OBJECTIVE | Re-brief narrower |
+| Read spiral | >3 reads without output | Intervene |
+| Planning loop | >2 responses of analysis | Intervene |
+| Scope creep | Files outside domain | Stop |
+| Infra failure | `CONCERN` citing transport errors | Re-route (see Fallback routing) |
+| Stall | Same region edited >2× without verify | Force verify or stop |
 
-Sub-agents have internal tripwires for these signals. External monitoring catches cases where self-enforcement fails.
+### Fallback routing
+
+When agent returns `CONCERN` from infra failure:
+
+1. Do not re-invoke same agent with same brief.
+2. Re-route to different agent with narrower, file-scoped brief.
+3. One diagnose+fix attempt max, then GO/NO-GO.
+4. Keep fallback briefs compact.
 
 ### Recovery
 
-1. Stop the agent immediately — further requests deepen drift.
-2. Diagnose: incomplete brief (your fault) or complex agent design (agent fault)?
-3. Incomplete brief → gather facts via `#explore`, re-brief with all five fields.
-4. Agent too complex → simplify instructions, narrow role, re-invoke.
-5. Never retry the same brief unchanged.
+Stop agent. Diagnose: incomplete brief (yours) or complex design (agent's)? Gather facts → re-brief, or simplify → re-invoke. Never retry unchanged.
 
 ### Consultation
 
-- Use foreground blocking calls for expert input that write agents depend on.
-- If consultation fails, state explicitly before delegating: *"Proceeding without [agent] input due to [reason]. Assumption: [one sentence]."*
-- Never delegate with hardcoded values while consultation is still running.
+Foreground blocking calls for expert input. If consultation fails, state assumption before delegating. Never delegate with hardcoded values while consultation runs.
 
 ### Orchestrator freedom
 
-The orchestrator is accountable for pipeline outcomes, not for following a script. It may:
-- Adjust request caps based on task complexity — simple tasks get tight limits, complex tasks get room.
-- Reorder, skip, or combine steps when evidence supports it.
-- Allow high request counts from sub-agents when evidence (file edits + test output) appears at a steady cadence.
-- Make judgment calls on ambiguous signals — not every read spiral is overthinking.
-
-The orchestrator's constraint is **outcomes**: did the sub-agent produce verified artifacts that match the objective? If yes, the path was acceptable regardless of request count.
+The orchestrator is accountable for **outcomes**, not process. It may adjust limits, reorder steps, allow high request counts when evidence supports it. Did the sub-agent produce verified artifacts matching the objective? Path was acceptable.
 
 ---
 
-## IV. Common Mistakes
+## V. Common Mistakes
 
-**[sub-agent]** No status token → orchestrator must parse prose. Always lead with a token.
+**[sub-agent]** No status token → orchestrator must parse prose.
 **[sub-agent]** Partial output on CONCERN → push back cleanly or produce full output, not both.
-**[sub-agent]** Writing outside your layer → raise `GAP`, don't overstep.
-**[sub-agent]** Findings without numbers → unnumbered findings can't be tracked.
-**[sub-agent]** Context hunting after starting → raise `GAP` or execute. Don't explore mid-work.
-**[sub-agent]** Lost without knowing it → confidently reading files without converging on objective. Most dangerous failure mode.
-**[sub-agent]** Self-rescue attempts → reading broadly when stuck. Return `LOST` instead.
-**[sub-agent]** Internal monologue as work → multi-paragraph reasoning burns requests without artifacts. Execute or `LOST`.
-**[orchestrator]** Vague description → routes everything to one agent. Be domain-specific.
-**[orchestrator]** Incomplete briefs → #1 cause of agent drift. Gather facts before delegating.
-**[orchestrator]** Bundled features → "Implement A, B, C" causes churn. Split into sequential micro-briefs.
-**[orchestrator]** Contradictory briefs → rewrite or choose a different agent. Don't force conflicts.
-**[orchestrator]** Retrying hung processes → kill, report, investigate root cause. No silent retries.
-**[both]** No parallelization declaration → orchestrator guesses wrong. Always declare.
-**[both]** Role without scope ceiling → unbounded roles drift. State boundaries explicitly.
-**[both]** >150 lines of instructions → compress. Bloated agents overthink.
+**[sub-agent]** Writing outside your layer → `GAP`.
+**[sub-agent]** Lost without knowing it → reading files without converging. Most dangerous failure.
+**[sub-agent]** Silent infra retry → fail fast after 2 attempts.
+**[sub-agent]** Vague infra CONCERN → name files, state, next step.
+**[orchestrator]** Vague description → misrouting.
+**[orchestrator]** Incomplete briefs → #1 cause of drift.
+**[orchestrator]** Bundled features → split into sequential micro-briefs.
+**[orchestrator]** Re-invoking after infra CONCERN → re-route instead.
+**[both]** No parallelization declaration.
+**[both]** Role without scope ceiling.
+**[both]** No fail-fast clause in How You Work.
