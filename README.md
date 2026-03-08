@@ -2,6 +2,8 @@
 
 Skill instruction for GitHub Copilot Cli. Teaches it to write agents with delegation contracts, status tokens, and countable tripwires.
 
+This skill instruction is still under heavy development and feedback is appriciated!
+
 ## What this is
 
 One markdown file (`agent-authoring.md`). Pass the raw URL to Copilot during agent tuning. Self-contained — no companion files.

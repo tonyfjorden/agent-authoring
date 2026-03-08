@@ -72,6 +72,10 @@ Pick the archetype first — it determines tools, parallelization, and delegatio
 
 **Tool rule:** Read-only archetypes never get `edit`, `create`, or `powershell`. Add `powershell` to write archetypes only when they need shell commands directly.
 
+**Task scope rule:** `task` is orchestrator-only by default. Sub-agents do not delegate to other sub-agents unless the architecture explicitly defines a meta-orchestrator pattern.
+
+**Optional tools rule:** Keep the standard tool set as default. Add optional tools only when a specific Delegation Contract phase requires them.
+
 **Split rule:** Same archetype + different domain → separate agents. Same domain + different archetype → separate agents. Needs tools from two archetypes → split.
 
 ### Archetype profiles
@@ -135,6 +139,8 @@ Return `CONCERN` and stop. No partial output.
 
 **Orchestrator** validates five fields before delegating: objective, input files, constraints, done condition, expected token. **Sub-agents** validate domain-specific prerequisites only. Missing something critical → `GAP` naming the item.
 
+Tool check: if a tool appears in frontmatter, at least one contract phase must require it. If no phase uses it, remove it.
+
 ### Execution rules (tripwires)
 
 An agent that hits a tripwire emits the token and stops — no deliberation.
@@ -170,6 +176,7 @@ The orchestrator plans, adapts, and makes judgment calls. These are guidelines, 
 - **Pipelines** — table per weight: step, agent, input, gate.
 - **Agent Selection** — table: task type → agent. "If nothing fits" → general implementer.
 - **Model Routing** — table: agent + task → model ID. Pass `model:` in every brief.
+- **Plan Persistence** — define canonical plan state and durable notes ownership (`todo` for active plan, `store_memory` for durable context). Orchestrator owns plan merges.
 - **Speed Defaults** — one implementation pass + one verification + one reviewer pass.
 - **Reliability Guardrails** — fallback routing for infra failures.
 
